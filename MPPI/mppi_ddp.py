@@ -26,7 +26,7 @@ class MPPIDDP(MPPI):
                          param_exploration, n_filt, logger)
         
         self.ddp_problem = ddp_problem
-        self.ddp_solver = crocoddyl.SolverDDP(self.ddp_problem)
+        self.ddp_solver = crocoddyl.SolverFDDP(self.ddp_problem)
         self.num_ddp_replace = num_ddp_replace # Store the new argument
 
         # Ensure num_ddp_replace does not exceed num_samples
@@ -41,12 +41,16 @@ class MPPIDDP(MPPI):
     def solve(self, x0: np.ndarray, num_iterations: int = 1):
         for iter_idx in range(num_iterations):     
             # This nominal rollout will also provide an initial state trajectory for DDP warm-start
-            nominal_X_trajectory, _ = self.rollout_trajectory(x0, self.U_nominal)           
+            if iter_idx == 0:
+                nominal_X_trajectory = np.tile(x0, (self.horizon + 1, 1))  # Initialize with x0 for all time steps
+            else:
+                nominal_X_trajectory, _ = self.rollout_trajectory(x0, self.U_nominal)           
             # --- DDP Solution Step ---
             # Update the DDP problem's initial state for the current iteration
-            self.ddp_problem.x0 = x0
-            
-            # Warm-start DDP with the current nominal controls and nominal state trajectory
+            # self.ddp_problem.x0 = x0
+            # init_xs - copy x0 everywhere
+            # Warm-start DDP with the current nominal controls and nominal state trajectory\
+            # print(self.U_nominal.shape)
             ddp_has_converged = self.ddp_solver.solve(init_us = list(self.U_nominal), init_xs = list(nominal_X_trajectory), maxiter=1) 
             ddp_U = np.array(self.ddp_solver.us)
             ddp_X = np.array(self.ddp_solver.xs)
@@ -124,5 +128,110 @@ class MPPIDDP(MPPI):
                 self.logger.log_nominal_data(self.U_nominal, nominal_X_trajectory)
 
             print(f"Iteration {iter_idx + 1}/{num_iterations}, Min Cost: {min_cost:.4f}, Mean Cost: {np.mean(costs):.4f}, DDP Cost: {ddp_cost:.4f}, DDP converged: {ddp_has_converged}")
+
+        return self.U_nominal
+
+
+    def solve_receding_horizon(self, x0: np.ndarray, N: int, num_ddp_iterations: int = 1):
+        """
+        Solves the control problem using a receding horizon approach with DDP-augmented MPPI.
+
+        Args:
+            x0 (np.ndarray): The initial state of the system.
+            N (int): The number of receding horizon steps.
+            num_ddp_iterations (int): The number of DDP solver iterations per receding horizon step.
+        """
+        # Initialize the nominal control sequence for the entire horizon
+        self.U_nominal = np.zeros((N, self.nu))
+        x_curr = x0.copy()
+        # The control sequence to be optimized at each time step
+        u_curr = np.zeros((self.horizon, self.nu))
+
+        # Main receding horizon loop
+        for iter_idx in range(N):
+
+            # --- DDP Solution Step ---
+            # Get the nominal trajectory for the current state and control sequence
+           # nominal_X_trajectory, _ = self.rollout_trajectory(x_curr, u_curr)
+            if iter_idx == 0:
+                nominal_X_trajectory = np.tile(x0, (self.horizon + 1, 1))  # Initialize with x0 for all time steps
+            else:
+                nominal_X_trajectory, _ = self.rollout_trajectory(x_curr, u_curr)
+            # Solve the DDP problem to get an optimal control sequence
+            ddp_has_converged = self.ddp_solver.solve(
+                init_us=list(u_curr),
+                init_xs=list(nominal_X_trajectory),
+                maxiter=num_ddp_iterations
+            )
+            ddp_U = np.array(self.ddp_solver.us)
+            ddp_X = np.array(self.ddp_solver.xs)
+            ddp_cost = self.ddp_solver.cost
+
+            # --- MPPI with DDP Sample Replacement ---
+            costs = np.zeros(self.num_samples)
+            all_delta_u = np.zeros((self.num_samples, self.horizon, self.nu))
+
+            # Replace the first set of samples with the DDP solution
+            if self.num_ddp_replace > 0:
+                costs[:self.num_ddp_replace] = ddp_cost
+                all_delta_u[:self.num_ddp_replace] = ddp_U - u_curr
+
+            # --- MPPI Sampling ---
+            num_mppi_samples = self.num_samples - self.num_ddp_replace
+            if num_mppi_samples > 0:
+                perturbations = np.random.multivariate_normal(
+                    np.zeros(self.nu),
+                    self.noise_distribution,
+                    size=(num_mppi_samples, self.horizon)
+                )
+            else:
+                perturbations = np.array([])
+
+            # Rollout trajectories for the remaining MPPI samples
+            for k in range(num_mppi_samples):
+                mppi_idx = k + self.num_ddp_replace
+
+                # Exploration vs. exploitation for MPPI samples
+                if k < (1.0 - self.param_exploration) * num_mppi_samples:
+                    U_i = u_curr + perturbations[k, :, :]
+                else:
+                    U_i = perturbations[k, :, :]
+
+                # Calculate the cost of the trajectory
+                _, sample_total_cost = self.rollout_trajectory(x_curr, U_i, U_nom=u_curr)
+                costs[mppi_idx] = sample_total_cost
+                all_delta_u[mppi_idx] = perturbations[k, :, :]
+
+            # --- Control Update ---
+            min_cost = np.min(costs)
+            weights = np.exp(-1 / self.lambda_param * (costs - min_cost))
+            weights /= np.sum(weights)
+
+            # Compute the weighted average of the control perturbations
+            w_epsilon = np.sum(weights[:, np.newaxis, np.newaxis] * all_delta_u, axis=0)
+
+            # Apply a moving average filter if specified
+            if self.n_filt > 0:
+                w_epsilon = self._moving_average_filter(w_epsilon, window_size=self.n_filt)
+
+            # Update the current control sequence
+            u_curr += w_epsilon
+
+            print(f"Iteration {iter_idx + 1}/{N}, Min Cost: {min_cost:.4f}, Mean Cost: {np.mean(costs):.4f}, DDP Cost: {ddp_cost:.4f}, DDP Converged: {ddp_has_converged}")
+
+            # --- Logging and State Update ---
+            if self.logger:
+                # Log the total cost and nominal trajectory
+                nominal_X_trajectory, nominal_total_cost = self.rollout_trajectory(x_curr, u_curr)
+                self.logger.log_total_cost(nominal_total_cost)
+                self.logger.log_nominal_data(u_curr, nominal_X_trajectory)
+
+            # Apply the first control action to the system
+            self.U_nominal[iter_idx, :] = u_curr[0, :]
+            x_curr = self.next_state(x_curr, u_curr[0, :])
+
+            # Shift the control sequence for the next iteration (receding horizon)
+            u_curr = np.roll(u_curr, -1, axis=0)
+            u_curr[-1, :] = np.zeros(self.nu)  # Set the last control to zero
 
         return self.U_nominal

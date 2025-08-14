@@ -12,17 +12,17 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
     State vector: [y, θ, ẏ, θ̇]
     Control input: [f] (force applied to the cart)
     """
-    def __init__(self):
+    def __init__(self, is_terminal: bool = False):
         """
         Initializes the cart-pole action model with system parameters and cost weights.
         """
-        super().__init__(crocoddyl.StateVector(4), 1, 6)  # nu = 1; nr = 6
+        super().__init__(crocoddyl.StateVector(4), 1, 6) # Changed from 6 to 5  # nu = 1; nr = 6
 
-        self.Δt = 5e-2
-        self.m_cart = 1.0
-        self.m_pole = 0.1
-        self.l_pole = 0.5
-        self.grav = 9.81
+        self.Δt = 5e-2     # 0.02 # 5e-2
+        self.m_cart = 1.0  # 1.0
+        self.m_pole = 0.1  # 0.01 # 0.1
+        self.l_pole = 0.5  # 2.0  # 0.5
+        self.grav = 9.81   # 9.81
         self.costWeights = [
             1.0,
             1.0,
@@ -31,6 +31,15 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             0.001,
             1.0,
         ]  # sin, 1-cos, x, xdot, thdot, f
+
+        # self.costWeights = [
+        #     5.0,
+        #     10,
+        #     0.1,
+        #     0.1,
+        #     0.001
+        # ]  # x, theta, xdot, thdot, f
+
 
     def calc(self, data, x, u=None):
         """
@@ -67,8 +76,13 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             data.xnext[:] = np.array([data.y_next, data.θ_next, data.ẏ_next, data.θ̇_next])
             # Computing the cost residual and value
             data.r[:] = w * np.array([sin_θ, 1.0 - cos_θ, y, ẏ, θ̇, f])
+            # print(f"shape of w: {len(w)}")
+            # print(f"shape of data.r: {data.r.shape}")
+            #data.r[1] = ((data.r[1] + np.pi) % (2 * np.pi)) - np.pi
+            #data.r[:] = w * np.array([y, θ, ẏ, θ̇, f])
             data.cost = 0.5 * sum(data.r ** 2)
         else:
+            # print("U is None")
             # Getting the state and control variables
             y, θ, ẏ, θ̇ = x[0], x[1], x[2], x[3]
             w = self.costWeights
@@ -76,6 +90,8 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             data.xnext[:] = x
             # Computing the cost residual and value
             data.r[:] = w * np.array([sin_θ, 1.0 - cos_θ, y, ẏ, θ̇, 0.0])
+            # data.r[1] = ((data.r[1] + np.pi) % (2 * np.pi)) - np.pi
+            # data.r[:] = w * np.array([y, θ, ẏ, θ̇, 0.0])
             data.cost = 0.5 * sum(data.r ** 2)
 
     def calcDiff(self, data, x, u=None):
@@ -134,6 +150,7 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             data.dθ_next_dẏ = Δt * data.dθ̇_next_dẏ
             data.dθ_next_dθ̇ = Δt * data.dθ̇_next_dθ̇
             data.dθ_next_du = Δt * data.dθ̇_next_du
+            # Derivatives of the dynamics
             data.Fx[:, :] = np.array([[data.dy_next_dy, data.dy_next_dθ, data.dy_next_dẏ, data.dy_next_dθ̇],
                                       [data.dθ_next_dy, data.dθ_next_dθ, data.dθ_next_dẏ, data.dθ_next_dθ̇],
                                       [data.dẏ_next_dy, data.dẏ_next_dθ, data.dẏ_next_dẏ, data.dẏ_next_dθ̇],
@@ -141,6 +158,7 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             data.Fu[:] = np.array([data.dy_next_du, data.dθ_next_du, data.dẏ_next_du, data.dθ̇_next_du])
             # Computing derivatives of the cost function
             w0_2, w1_2, w2_2, w3_2, w4_2, w5_2 = w[0] * w[0], w[1] * w[1], w[2] * w[2], w[3] * w[3], w[4] * w[4], w[5] * w[5]
+            #w0_2, w1_2, w2_2, w3_2, w4_2 = w[0] * w[0], w[1] * w[1], w[2] * w[2], w[3] * w[3], w[4] * w[4]
             data.Lx[0] = w2_2 * y
             data.Lx[1] = w0_2 * sin_θ * cos_θ + w1_2 * (1.0 - cos_θ) * sin_θ
             data.Lx[2] = w3_2 * ẏ
@@ -152,6 +170,17 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             data.Lxx[2, 2] = w3_2
             data.Lxx[3, 3] = w4_2
             data.Luu[:] = w5_2
+            # data.Lx[0] = w0_2 * y
+            # data.Lx[1] = w1_2 * θ
+            # data.Lx[2] = w2_2 * ẏ
+            # data.Lx[3] = w3_2 * θ̇
+            # data.Lu[0] = w4_2 * f
+            # data.Lxx[0, 0] = w0_2
+            # data.Lxx[1, 1] = w1_2
+            # data.Lxx[2, 2] = w2_2
+            # data.Lxx[3, 3] = w3_2
+            # data.Luu[:] = w4_2
+            
         else:
             # Getting the state and control variables
             y, θ, ẏ, θ̇ = x[0], x[1], x[2], x[3]
@@ -162,6 +191,7 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
                 data.Fx[i, i] = 1.0
             # Computing derivatives of the cost function
             w0_2, w1_2, w2_2, w3_2, w4_2, w5_2 = w[0] * w[0], w[1] * w[1], w[2] * w[2], w[3] * w[3], w[4] * w[4], w[5] * w[5]
+            #w0_2, w1_2, w2_2, w3_2, w4_2 = w[0] * w[0], w[1] * w[1], w[2] * w[2], w[3] * w[3], w[4] * w[4]
             data.Lx[0] = w2_2 * y
             data.Lx[1] = w0_2 * sin_θ * cos_θ + w1_2 * (1.0 - cos_θ) * sin_θ
             data.Lx[2] = w3_2 * ẏ
@@ -171,6 +201,14 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
             data.Lxx[1, 1] += w1_2 * ((1.0 - cos_θ) * cos_θ + sin_θ * sin_θ)
             data.Lxx[2, 2] = w3_2
             data.Lxx[3, 3] = w4_2
+            # data.Lx[0] = w0_2 * y
+            # data.Lx[1] = w1_2 * θ
+            # data.Lx[2] = w2_2 * ẏ
+            # data.Lx[3] = w3_2 * θ̇
+            # data.Lxx[0, 0] = w0_2
+            # data.Lxx[1, 1] = w1_2
+            # data.Lxx[2, 2] = w2_2
+            # data.Lxx[3, 3] = w3_2
 
     def createData(self):
         """

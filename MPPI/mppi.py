@@ -352,6 +352,7 @@ class MPPI:
                  num_samples: int,
                  lambda_param: float,
                  noise_sigma: np.ndarray,
+                 #N: int = None,
                  param_gamma: float = 0,
                  param_exploration: float = 0,
                  n_filt: int = 0,
@@ -362,6 +363,7 @@ class MPPI:
         self.horizon = horizon
         self.num_samples = num_samples
         self.lambda_param = lambda_param
+        #self.N = N
         self.noise_sigma = noise_sigma
         self.param_gamma = param_gamma
         self.param_exploration = param_exploration
@@ -374,6 +376,7 @@ class MPPI:
 
         # Nominal control sequence (initialized to zeros)
         self.U_nominal = np.zeros((self.horizon, self.nu))
+        # self.U_nominal = 0.01 * np.random.randn(self.horizon, self.nu)
         self.noise_distribution = self._get_noise_distribution()
 
         # Logger object
@@ -418,11 +421,12 @@ class MPPI:
         running_data = self._running_model_data
         term_data = self._terminal_model_data
 
-        for t in range(self.horizon):
+        for t in range(len(U_sequence)):
             u_t = U_sequence[t, :]
             self.action_model.calc(running_data, current_x, u_t)
             next_x = running_data.xnext
             cost_t = running_data.cost
+            #print(cost_t)
             # print(cost_t)
             if U_nom is not None:
                 u_nom_t = U_nom[t, :]
@@ -438,6 +442,13 @@ class MPPI:
 
         return np.array(X_trajectory), total_cost
 
+    def next_state(self, x_curr: np.ndarray, u_curr: np.ndarray):
+        """
+        Computes the next state given the current state and control input.
+        """
+        self.action_model.calc(self._running_model_data, x_curr, u_curr)
+        return self._running_model_data.xnext.copy()
+
     def solve(self, x0: np.ndarray, num_iterations: int = 1):
         for iter_idx in range(num_iterations):
 
@@ -448,6 +459,7 @@ class MPPI:
                 size=(self.num_samples, self.horizon)
             )
 
+            # perturbations[0, :] = np.zeros(self.horizon)
             # LOGGING: Temporary storage for sampled data for the current iteration for detailed logging
             curr_iter_sampled_controls = []
             curr_iter_sampled_states = []
@@ -499,6 +511,84 @@ class MPPI:
                 self.logger.log_total_cost(nominal_total_cost)
                 self.logger.log_nominal_data(self.U_nominal, nominal_X_trajectory)
 
+        return self.U_nominal
+    
 
+    def solve_receding_horizon(self, x0: np.ndarray, N: int):
+        self.U_nominal = np.zeros((N, self.nu))  # Reset nominal control sequence for receding horizon
+        x_curr = x0.copy()
+        u_curr = np.zeros((self.horizon, self.nu))
+        #u_curr = self.U_nominal.copy()
+
+        for iter_idx in range(N):
+
+            # Sample control perturbations
+            perturbations = np.random.multivariate_normal(
+                np.zeros(self.nu),
+                self.noise_distribution,
+                size=(self.num_samples, self.horizon)
+            )
+
+            # LOGGING: Temporary storage for sampled data for the current iteration for detailed logging
+            # curr_iter_sampled_controls = []
+            # curr_iter_sampled_states = []
+            
+            # Rollout trajectories and calculate costs
+            costs = np.zeros(self.num_samples) # Store costs to calculate weights
+            for k in range(self.num_samples):
+                if k < (1.0 - self.param_exploration) * self.num_samples:
+                    U_i = u_curr + perturbations[k, :, :]
+                else:
+                    U_i = perturbations[k, :, :]
+
+                X_trajectory, sample_total_cost = self.rollout_trajectory(x_curr, U_i, U_nom=u_curr)
+
+                costs[k] = sample_total_cost
+
+                # Collect sampled controls and states if a logger is present and conditions met
+                # if self.logger and self.logger.enable_logging and (iter_idx % self.logger.n_log == 0):
+                #     curr_iter_sampled_controls.append(U_i)
+                #     curr_iter_sampled_states.append(X_trajectory)
+
+
+            # Calculate weights based on costs
+            min_cost = np.min(costs)
+            weights = np.exp(-1 / self.lambda_param * (costs - min_cost))
+            weights /= np.sum(weights)  # Normalize weights
+
+            # Pass the collected sampled data and weights to the logger if logging conditions are met
+            # if self.logger and self.logger.enable_logging and (iter_idx % self.logger.n_log == 0):
+            #     self.logger.log_sampled_data(iter_idx,
+            #                                  costs,
+            #                                  np.array(curr_iter_sampled_controls),
+            #                                  np.array(curr_iter_sampled_states),
+            #                                  weights)
+
+            w_epsilon = np.sum(weights[:, np.newaxis, np.newaxis] * perturbations, axis=0)
+
+            # Optionaly: apply moving avarage filter
+            if self.n_filt != 0:
+                w_epsilon = self._moving_average_filter(w_epsilon, window_size=self.n_filt)
+
+            # Update nominal control sequence
+            u_curr += w_epsilon
+
+            print(f"Iteration {iter_idx + 1}/{N}, Min Cost: {min_cost:.4f}, Mean Cost: {np.mean(costs):.4f}")
+            
+            # LOGGING: current total cost and nominal trajectory of the nominal U before update
+            if self.logger:
+                nominal_X_trajectory, nominal_total_cost = self.rollout_trajectory(x_curr, u_curr)
+                self.logger.log_total_cost(nominal_total_cost)
+                self.logger.log_nominal_data(u_curr, nominal_X_trajectory)
+
+            # Apply the first control sequence
+            #print(f"Shape of u_curr: {u_curr.shape}, U_nominal: {self.U_nominal.shape}")
+            self.U_nominal[iter_idx, :] = u_curr[0, :]
+            # Update state, update u_curr
+            x_curr = self.next_state(x_curr, u_curr[0, :])
+
+            # Shift the control sequence for the next iteration
+            u_curr = np.roll(u_curr, -1, axis=0)
+            u_curr[-1, :] = np.zeros(self.nu)  # Last control is always zero
 
         return self.U_nominal
