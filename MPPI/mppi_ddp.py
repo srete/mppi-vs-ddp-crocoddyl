@@ -41,10 +41,10 @@ class MPPIDDP(MPPI):
     def solve(self, x0: np.ndarray, num_iterations: int = 1):
         for iter_idx in range(num_iterations):     
             # This nominal rollout will also provide an initial state trajectory for DDP warm-start
-            if iter_idx == 0:
-                nominal_X_trajectory = np.tile(x0, (self.horizon + 1, 1))  # Initialize with x0 for all time steps
-            else:
-                nominal_X_trajectory, _ = self.rollout_trajectory(x0, self.U_nominal)           
+            # if iter_idx == 0:
+            #     nominal_X_trajectory = np.tile(x0, (self.horizon + 1, 1))  # Initialize with x0 for all time steps
+            # else:
+            nominal_X_trajectory, _ = self.rollout_trajectory(x0, self.U_nominal)           
             # --- DDP Solution Step ---
             # Update the DDP problem's initial state for the current iteration
             # self.ddp_problem.x0 = x0
@@ -153,10 +153,10 @@ class MPPIDDP(MPPI):
             # --- DDP Solution Step ---
             # Get the nominal trajectory for the current state and control sequence
            # nominal_X_trajectory, _ = self.rollout_trajectory(x_curr, u_curr)
-            if iter_idx == 0:
-                nominal_X_trajectory = np.tile(x0, (self.horizon + 1, 1))  # Initialize with x0 for all time steps
-            else:
-                nominal_X_trajectory, _ = self.rollout_trajectory(x_curr, u_curr)
+            # if iter_idx == 0:
+            #     nominal_X_trajectory = np.tile(x0, (self.horizon + 1, 1))  # Initialize with x0 for all time steps
+            # else:
+            nominal_X_trajectory, _ = self.rollout_trajectory(x_curr, u_curr)
             # Solve the DDP problem to get an optimal control sequence
             ddp_has_converged = self.ddp_solver.solve(
                 init_us=list(u_curr),
