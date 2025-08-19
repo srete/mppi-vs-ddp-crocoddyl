@@ -18,7 +18,7 @@ class ActionModelCartpole(crocoddyl.ActionModelAbstract):
         """
         super().__init__(crocoddyl.StateVector(4), 1, 6) # Changed from 6 to 5  # nu = 1; nr = 6
 
-        self.Δt = 5e-2     # 0.02 # 5e-2
+        self.Δt = 0.01 #5e-2     # 0.02 # 5e-2
         self.m_cart = 1.0  # 1.0
         self.m_pole = 0.1  # 0.01 # 0.1
         self.l_pole = 0.5  # 2.0  # 0.5
